@@ -1,2 +1,1 @@
-# backtestlib
-EFN2 backtesting library
+# backtest-lib
