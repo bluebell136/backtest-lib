@@ -194,52 +194,32 @@ class Model(BaseModel):
 
         return x
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     # TODO: SELECT SOURCES. You may delete or comment out the rest.
 
-    sources = {
+    sources = [
         # BASF
-        "BAS.BOOK": "./data/Books_BAS_DE_20160101_20160331.csv",
-        "BAS.TRADES": "./data/Trades_BAS_DE_20160101_20160331.json",
-        "BAS.NEWS": "./data/News_BAS_20160101_20160331.json",
+        "BAS.BOOK", "BAS.TRADES", "BAS.NEWS",
         # Bayer
-        "BAY.BOOK": "./data/Books_BAY_DE_20160101_20160331.csv",
-        "BAY.TRADES": "./data/Trades_BAY_DE_20160101_20160331.json",
-        "BAY.NEWS": "./data/News_BAY_20160101_20160331.json",
+        "BAY.BOOK", "BAY.TRADES", "BAY.NEWS",
         # BMW
-        "BMW.BOOK": "./data/Books_BMW_DE_20160101_20160331.csv",
-        "BMW.TRADES": "./data/Trades_BMW_DE_20160101_20160331.json",
-        "BMW.NEWS": "./data/News_BMW_20160101_20160331.json",
+        "BMW.BOOK", "BMW.TRADES", "BMW.NEWS",
         # Commerzbank
-        "CBK.BOOK": "./data/Books_CBK_DE_20160101_20160331.csv",
-        "CBK.TRADES": "./data/Trades_CBK_DE_20160101_20160331.json",
-        "CBK.NEWS": "./data/News_CBK_20160101_20160331.json",
+        "CBK.BOOK", "CBK.TRADES", "CBK.NEWS",
         # Daimler
-        "DAI.BOOK": "./data/Books_DAI_DE_20160101_20160331.csv",
-        "DAI.TRADES": "./data/Trades_DAI_DE_20160101_20160331.json",
-        "DAI.NEWS": "./data/News_DAI_20160101_20160331.json",
+        "DAI.BOOK", "DAI.TRADES", "DAI.NEWS",
         # Deutsche Bank
-        "DBK.BOOK": "./data/Books_DBK_DE_20160101_20160331.csv",
-        "DBK.TRADES": "./data/Trades_DBK_DE_20160101_20160331.json",
-        "DBK.NEWS": "./data/News_DBK_20160101_20160331.json",
+        "DBK.BOOK", "DBK.TRADES", "DBK.NEWS",
         # E.ON
-        "EON.BOOK": "./data/Books_EON_DE_20160101_20160331.csv",
-        "EON.TRADES": "./data/Trades_EON_DE_20160101_20160331.json",
-        "EON.NEWS": "./data/News_EON_20160101_20160331.json",
+        "EON.BOOK", "EON.TRADES", "EON.NEWS",
         # Fresenius Medical Care
-        "FME.BOOK": "./data/Books_FME_DE_20160101_20160331.csv",
-        "FME.TRADES": "./data/Trades_FME_DE_20160101_20160331.json",
-        "FME.NEWS": "./data/News_FME_20160101_20160331.json",
+        "FME.BOOK", "FME.TRADES", "FME.NEWS",
         # Fresenius
-        "FRE.BOOK": "./data/Books_FRE_DE_20160101_20160331.csv",
-        "FRE.TRADES": "./data/Trades_FRE_DE_20160101_20160331.json",
-        "FRE.NEWS": "./data/News_FRE_20160101_20160331.json",
+        "FRE.BOOK", "FRE.TRADES", "FRE.NEWS",
         # RWE
-        "RWE.BOOK": "./data/Books_RWE_DE_20160101_20160331.csv",
-        "RWE.TRADES": "./data/Trades_RWE_DE_20160101_20160331.json",
-        "RWE.NEWS": "./data/News_RWE_20160101_20160331.json",
-    }
+        "RWE.BOOK", "RWE.TRADES", "RWE.NEWS",
+    ]
 
     # TODO: SELECT DATE RANGE. Please use format 'YYYY-MM-DD'.
 

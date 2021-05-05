@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 from TRTH_aggregate_book_timestamp import _aggregate_book_timestamp

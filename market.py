@@ -6,10 +6,11 @@ import numpy as np
 import pandas as pd
 import textwrap
 
+from decimal import Decimal
+
 class Market:
 
     instances = dict() # instance store
-    timestamp_global = pd.NaT # most recent timestamp across all instances
 
     def __init__(self, market_id):
         """
@@ -30,12 +31,11 @@ class Market:
         - update(self, book_state, trades_state)
         - match(self)
 
-        ... that (1) update both pre-trade as well as post-trade state and then
-        (2) match standing agent orders corresponding to either side. Also, this
+        ... that (1) update both post-trade as well as pre-trade state and then
+        (2) match standing agent orders against the pre-trade state. Also, this
         class implements a set of market statistics ...
 
-        - timestamp (instance attribute)
-        - timestamp_global (class attribute)
+        - timestamp
         - best_bid
         - best_ask
         - mid_point
@@ -50,6 +50,8 @@ class Market:
 
         All market instances are stored in and may be accessed through the
         `instances` class attribute (dictionary).
+        The most recent timestamp across all markets may be accessed through
+        the `timestamp_global` class attribute.
 
         :param market_id:
             str, market identifier
@@ -77,10 +79,73 @@ class Market:
         self._best_bid = np.NaN
         self._best_ask = np.NaN
         self._mid_point = np.NaN
-        self._tick_size = np.NaN
 
         # post-trade state, {<price>: [(<timestamp>, <quantity>), *], *}
         self._state = dict()
+
+    # available orders ---
+
+    @property
+    def _orders(self):
+        """
+        View based on Order.history, includes all AGENT orders filtered by
+        status 'ACTIVE', older-than-current timestamp and corresponding
+        market_id.
+
+        :return orders:
+            list, filtered Order instances
+        """
+
+        orders = Order.history
+
+        # orders must have status 'ACTIVE'
+        orders = filter(lambda order: order.status == "ACTIVE", orders)
+        # orders must have been submitted before current timestamp
+        orders = filter(lambda order: order.timestamp <= self._timestamp, orders)
+        # orders must have corresponding market_id
+        orders = filter(lambda order: order.market_id == self.market_id, orders)
+
+        return list(orders)
+
+    @property
+    def _orders_buy(self):
+        """
+        View based on _orders, includes all AGENT buy orders, sorted according
+        to price-time-priority.
+
+        :return orders:
+            list, filtered and sorted buy Order instances
+        """
+
+        orders = self._orders
+
+        # filtered by bid side
+        orders = filter(lambda order: order.side == "buy", orders)
+        # sort by (1) limit DESCENDING and (2) time ASCENDING
+        orders = sorted(orders, key=lambda x: x.timestamp)
+        orders = sorted(orders, key=lambda x: x.limit or min(self._state_ask), reverse=True)
+
+        return list(orders)
+
+    @property
+    def _orders_sell(self):
+        """
+        View based on _orders, includes all AGENT sell orders, sorted according
+        to price-time-priority.
+
+        :return orders:
+            list, filtered and sorted sell Order instances
+        """
+
+        orders = self._orders
+
+        # filtered ask side
+        orders = filter(lambda order: order.side == "sell", orders)
+        # sort by (1) limit ASCENDING and (2) time ASCENDING
+        orders = sorted(orders, key=lambda x: x.timestamp)
+        orders = sorted(orders, key=lambda x: x.limit or max(self._state_bid), reverse=False)
+
+        return list(orders)
 
     # original input ---
 
@@ -112,7 +177,7 @@ class Market:
     @property
     def timestamp(self):
         """
-        Current timestamp corresponding to the most recent market update.
+        Current timestamp recorded for the most recent market update.
 
         :return timestamp:
             pd.Timestamp, ...
@@ -153,6 +218,8 @@ class Market:
 
         return self._mid_point
 
+    # general statistics (based on book_state) ---
+
     @property
     def tick_size(self):
         """
@@ -163,12 +230,21 @@ class Market:
             float, ...
         """
 
-        return self._tick_size
+        _, *book_state = self.book_state.values
+
+        # tick_size is greatest common divisor among price levels
+        tick_size = np.array(book_state)[0::2] * 1e3
+        tick_size = np.gcd.reduce(
+            np.around(tick_size).astype(int)
+        )
+        tick_size = tick_size / 1e3
+
+        return tick_size
 
     # aggregated statistics (based on trades_state) ---
 
     @property
-    def volume(self): # (timestamp, price, quantity) = x
+    def volume(self):
         """
         Daily historical trading volume up to the current timestamp based on
         trades_state. Note that this value does not reflect agent-based trades.
@@ -177,10 +253,13 @@ class Market:
             int, ...
         """
 
-        return sum(x[2] for x in self._trades_historical)
+        # (timestamp, price, quantity) = x
+        volume = sum(x[2] for x in self._trades_historical)
+
+        return volume
 
     @property
-    def vwap(self): # (timestamp, price, quantity) = x
+    def vwap(self):
         """
         Daily historical VWAP up to the current timestamp based on trades_state.
         Note that this value does not reflect agent-based trades.
@@ -189,7 +268,10 @@ class Market:
             float, ...
         """
 
-        return sum(x[1] * x[2] for x in self._trades_historical) / self.volume
+        # (timestamp, price, quantity) = x
+        vwap = sum(x[1] * x[2] for x in self._trades_historical) / self.volume
+
+        return vwap
 
     # update market ---
 
@@ -213,7 +295,7 @@ class Market:
         if not quantity:
             return liquidity_list
 
-        # convert to dictionary, timestamps are supposed to be unique
+        # convert to dictionary, timestamps are unique
         liquidity = dict(liquidity_list)
 
         # aggregate added quantity with pre-existent quantity
@@ -298,7 +380,7 @@ class Market:
             int, remaining quantity surplus
         """
 
-        # convert list to dictionary, timestamps must to be unique
+        # convert to dictionary, timestamps are unique
         liquidity = dict(liquidity_list)
         liquidity_init = dict(liquidity_list_init)
 
@@ -327,11 +409,12 @@ class Market:
 
     def update(self, book_state, trades_state):
         """
-        Update both internal and external representation of the order book,
-        that is `state_internal` (post-trade) and `state_external` (pre-trade).
+        Update both post-trade and pre-trade state.
 
-        Use methods `add_liquidity` and `use_liquidity` in order to add and
-        remove liquidity to and from a given price level.
+        Use methods ...
+        - `_add_liquidity`: add liquidity to a given price level
+        - `_use_liquidity`: remove liquidity from a given price level
+        - `_restore_liquidity`: restore liquidity for a given price level
 
         :param book_state:
             pd.Series, book data
@@ -347,16 +430,11 @@ class Market:
         timestamp, *book_state = book_state.values
         _, *trades_state = trades_state.values
 
-        # set update-related attributes based on list representation
-        self._timestamp = self.__class__.timestamp_global = timestamp
+        # set update-related attributes based on list representation 
+        self._timestamp = timestamp
         self._best_bid = round(book_state[0], 3) # <L1-BidPrice>
         self._best_ask = round(book_state[2], 3) # <L1-AskPrice>
         self._mid_point = round((self._best_bid + self._best_ask) / 2, 3)
-
-        # infer tick_size from price levels in book_state
-        self._tick_size = np.gcd.reduce(
-            (np.array(book_state)[0::2] * 1e3).astype(int)
-        ) / 1e3 # identify greatest common divisor
 
         # set dictionary representation for t-1 (_book_last), t (_book_this)
         self._book_last = self._book_this
@@ -374,7 +452,7 @@ class Market:
         # POST-TRADE STATE, {<price>: [(<timestamp>, <quantity>), *], *} ...
 
         # create deepcopy to later reconstruct timestamps in pre-trade state
-        STATE_COPY_INIT = copy.deepcopy(self._state)
+        COPY_STATE_INIT = copy.deepcopy(self._state)
 
         # book_difference, [(<price>, <quantity>), *]
         book_difference = []
@@ -400,27 +478,27 @@ class Market:
             # if positive qdiff: add liquidity to a given price level
             if qdiff > 0:
                 self._state[price] = self._add_liquidity(
-                    self._state.get(price, []),
-                    self._timestamp, abs(qdiff),
+                    liquidity_list=self._state.get(price, []),
+                    timestamp=self._timestamp, quantity=abs(qdiff),
                 )
             # if negative qdiff: use liquidity from a given price level
             if qdiff < 0:
                 self._state[price] = self._use_liquidity(
-                    self._state.get(price, []),
-                    abs(qdiff),
+                    liquidity_list=self._state.get(price, []),
+                    quantity=abs(qdiff),
                 )
 
         # PRE-TRADE STATE, {<price>: [(<timestamp>, <quantity>), *], *} ...
 
         # create deepcopy to isolate state from pre-trade changes
-        STATE_COPY_POST = copy.deepcopy(self._state)
+        COPY_STATE_POST = copy.deepcopy(self._state)
 
         # filter price levels on bid side (< mid_point), ask side (> mid_point)
-        self._match_bid = {price: liquidity_list for price, liquidity_list
-            in STATE_COPY_POST.items() if price < self._mid_point
+        self._state_bid = {price: liquidity_list for price, liquidity_list 
+            in COPY_STATE_POST.items() if price < self._mid_point
         }
-        self._match_ask = {price: liquidity_list for price, liquidity_list
-            in STATE_COPY_POST.items() if price > self._mid_point
+        self._state_ask = {price: liquidity_list for price, liquidity_list
+            in COPY_STATE_POST.items() if price > self._mid_point
         }
 
         # trades_state: revert ...
@@ -429,24 +507,24 @@ class Market:
 
                 # assign roles side_1st (standing side), side_2nd (matching side)
                 if price < mid_point(self._book_last):
-                    side_1st, side_2nd = self._match_bid, self._match_ask
+                    side_1st, side_2nd = self._state_bid, self._state_ask
                 if price > mid_point(self._book_last):
-                    side_1st, side_2nd = self._match_ask, self._match_bid
+                    side_1st, side_2nd = self._state_ask, self._state_bid
 
                 # standing side (1): restore liquidity (t-1), use original timestamp(s)
                 side_1st[price], surplus = self._restore_liquidity(
-                    side_1st.get(price, []), STATE_COPY_INIT.get(price, []),
-                    quantity,
+                    liquidity_list=side_1st.get(price, []), 
+                    liquidity_list_init=COPY_STATE_INIT.get(price, []), quantity=quantity,
                 )
                 # standing side (2): add liquidity (t), use current timestamp, only in case of surplus
                 side_1st[price] = self._add_liquidity(
-                    side_1st.get(price, []),
-                    self._timestamp, surplus,
+                    liquidity_list=side_1st.get(price, []),
+                    timestamp=self._timestamp, quantity=surplus,
                 )
                 # matching side (1): add liquidity (t), use current timestamp
                 side_2nd[price] = self._add_liquidity(
-                    side_2nd.get(price, []),
-                    self._timestamp, quantity,
+                    liquidity_list=side_2nd.get(price, []),
+                    timestamp=self._timestamp, quantity=quantity,
                 )
 
                 # keep track of historical trade
@@ -455,11 +533,11 @@ class Market:
                 )
 
         # sort price levels on bid side (DESCENDING), ask side (ASCENDING)
-        self._match_bid = dict(
-            sorted(self._match_bid.items(), reverse=True)
+        self._state_bid = dict(
+            sorted(self._state_bid.items(), reverse=True)
         )
-        self._match_ask = dict(
-            sorted(self._match_ask.items(), reverse=False)
+        self._state_ask = dict(
+            sorted(self._state_ask.items(), reverse=False)
         )
 
     # match orders against market ---
@@ -511,8 +589,11 @@ class Market:
             if quantity_used:
                 order.execute(self._timestamp, quantity_used, price)
 
-            # take liquidity
-            state[price] = self._use_liquidity(state[price], quantity_used)
+            # use liquidity
+            state[price] = self._use_liquidity(
+                liquidity_list=state[price], 
+                quantity=quantity_used,
+            )
 
         return state
 
@@ -548,8 +629,11 @@ class Market:
             if quantity_used:
                 order.execute(self._timestamp, quantity_used, price)
 
-            # take liquidity
-            state[price] = self._use_liquidity(state[price], quantity_used)
+            # use liquidity
+            state[price] = self._use_liquidity(
+                liquidity_list=state[price], 
+                quantity=quantity_used,
+            )
 
         return state
 
@@ -562,32 +646,50 @@ class Market:
         market and limit orders.
         """
 
-        # match buy orders against ask state
-        for order in self.orders_buy:
-            # limit order
+        # state_ask is consumed, COPY_STATE_ASK is competing state
+        STATE_ASK_COPY = copy.deepcopy(self._state_ask)
+        state_ask = self._state_ask
+        
+        # state_bid is consumed, COPY_STATE_BID is competing state
+        STATE_BID_COPY = copy.deepcopy(self._state_bid)
+        state_bid = self._state_bid
+
+        # match agent buy orders against ask state, bid state is competing
+        for order in self._orders_buy:
+            
+            # limit order: match against price levels better than limit
             if order.limit:
-                self._match_ask = self._match_limit(order,
-                    state=self._match_ask, state_compete=self._match_bid,
-                    side=order.side, limit=order.limit,
+                state_ask = self._match_limit(order=order,
+                    state=state_ask, 
+                    state_compete=STATE_BID_COPY,
+                    side=order.side, 
+                    limit=order.limit,
                 )
-            # market order
+            
+            # market order: match against all price levels
             else:
-                self._match_ask = self._match_market(order,
-                    state=self._match_ask, state_compete=self._match_bid,
+                state_ask = self._match_market(order=order,
+                    state=state_ask, 
+                    state_compete=STATE_BID_COPY,
                 )
 
-        # match sell orders against bid state
-        for order in self.orders_sell:
-            # limit order
+        # match agent sell orders against bid state, ask state is competing
+        for order in self._orders_sell:
+            
+            # limit order: match against price levels better than limit
             if order.limit:
-                self._match_bid = self._match_limit(order,
-                    state=self._match_bid, state_compete=self._match_ask,
-                    side=order.side, limit=order.limit,
+                state_bid = self._match_limit(order=order,
+                    state=state_bid, 
+                    state_compete=STATE_ASK_COPY,
+                    side=order.side, 
+                    limit=order.limit,
                 )
-            # market order
+            
+            # market order: match against all price levels
             else:
-                self._match_bid = self._match_market(order,
-                    state=self._match_bid, state_compete=self._match_ask,
+                state_bid = self._match_market(order=order,
+                    state=state_bid, 
+                    state_compete=STATE_ASK_COPY,
                 )
 
     # reset market ---
@@ -597,109 +699,8 @@ class Market:
         Run reset routine on method call.
         """
 
-        # reset trades on daily basis
+        # ...
         del self._trades_historical[:]
-
-    # available orders ---
-
-    @property
-    def orders(self):
-        """
-        View based on Order.history, includes all AGENT orders filtered by
-        status 'ACTIVE', older-than-current timestamp and corresponding
-        market_id.
-
-        :return orders:
-            list, filtered Order instances
-        """
-
-        orders = Order.history
-
-        # orders must have status 'ACTIVE'
-        orders = filter(lambda order: order.status == "ACTIVE", orders)
-        # orders must have been submitted before current timestamp
-        orders = filter(lambda order: order.timestamp <= self._timestamp, orders)
-        # orders must have corresponding market_id
-        orders = filter(lambda order: order.market_id == self.market_id, orders)
-
-        return list(orders)
-
-    @property
-    def orders_buy(self):
-        """
-        View based on orders, includes all AGENT buy orders, sorted according
-        to price-time-priority.
-
-        :return orders:
-            list, filtered and sorted buy Order instances
-        """
-
-        orders = self.orders
-
-        # filtered by bid side
-        orders = filter(lambda order: order.side == "buy", orders)
-        # sort by (1) limit DESCENDING and (2) time ASCENDING
-        orders = sorted(orders, key=lambda x: x.timestamp)
-        orders = sorted(orders, key=lambda x: x.limit or min(self._match_ask), reverse=True)
-
-        return list(orders)
-
-    @property
-    def orders_sell(self):
-        """
-        View based on orders, includes all AGENT sell orders, sorted according
-        to price-time-priority.
-
-        :return orders:
-            list, filtered and sorted sell Order instances
-        """
-
-        orders = self.orders
-
-        # filtered ask side
-        orders = filter(lambda order: order.side == "sell", orders)
-        # sort by (1) limit ASCENDING and (2) time ASCENDING
-        orders = sorted(orders, key=lambda x: x.timestamp)
-        orders = sorted(orders, key=lambda x: x.limit or max(self._match_bid), reverse=False)
-
-        return list(orders)
-
-    # string representation ---
-
-    def __str__(self):
-        """
-        Provide string representation based on post-trade state.
-        """
-
-        market_id = self.market_id
-        timestamp = self._timestamp
-
-        best_bid = self._best_bid
-        best_bid_size = self._book_state["L1-BidSize"]
-        best_ask = self._best_ask
-        best_ask_size = self._book_state["L1-AskSize"]
-
-        mid_point = self._mid_point
-        last_price = (self._trades_historical[-1:][0][1]
-            if self._trades_historical else np.NaN
-        )
-
-        # string representation
-        string = textwrap.dedent(f"""
-        ---
-        market_id:      {market_id}
-        timestamp:      {timestamp}
-        ---
-        L1-BidPrice:    {best_bid}
-        L1-BidSize:     {best_bid_size}
-        L1-AskPrice:    {best_ask}
-        L1-AskSize:     {best_ask_size}
-        ---
-        mid_point:      {mid_point}
-        last_price:     {last_price}
-        """)
-
-        return string
 
 class Order:
 
@@ -748,14 +749,14 @@ class Order:
             self._assert_params()
         # set status 'REJECTED' if parameters are invalid
         except Exception as error:
-            print("(SYSTEM) order {order_id} was rejected: {error}".format(
+            print("(INFO) order {order_id} was rejected: {error}".format(
                 order_id=self.order_id,
                 error=error,
             ))
             self.status = "REJECTED"
         # ...
         else:
-            print("(SYSTEM) order {order_id} was accepted: {self}".format(
+            print("(INFO) order {order_id} was accepted: {self}".format(
                 order_id=self.order_id,
                 self=self,
             ))
@@ -765,22 +766,17 @@ class Order:
 
     def _assert_params(self):
         """
-        Assert market-related order parameters and provide information about
-        an erroneous order submission. Note that program execution is supposed
-        to continue.
+        Assert order parameters and provide information about an erroneous
+        order submission. Note that program execution is supposed to continue.
         """
 
         # first, assert that market exists
         assert self.market_id in Market.instances, \
-            "market_id '{market_id}' is not available".format(
+            "market_id '{market_id}' does not exist".format(
                 market_id=self.market_id,
             )
-
-        # ...
-        tick_size = Market.instances[self.market_id].tick_size
-        timestamp = Market.instances[self.market_id].timestamp
-
         # assert that market state is available
+        timestamp = Market.instances[self.market_id].timestamp
         assert not pd.isnull(timestamp), \
             "trading is yet to start for market '{market_id}'".format(
                 market_id=self.market_id
@@ -795,9 +791,10 @@ class Order:
             "quantity can only take integer values".format(
                 quantity=self.quantity,
             )
-        # if specified, assert that limit is valid
+        # assert that limit is valid
+        tick_size = Market.instances[self.market_id].tick_size
         if self.limit:
-            assert not (self.limit * 1e3) % (tick_size * 1e3), \
+            assert not Decimal(str(self.limit)) % Decimal(str(tick_size)), \
                 "limit {limit} is too granular for tick_size {tick_size}".format(
                     limit=self.limit,
                     tick_size=tick_size,
@@ -805,9 +802,10 @@ class Order:
 
     def execute(self, timestamp, quantity, price):
         """
-        Execute order. Note that an order is split into multiple trades if it
-        is matched across multiple prices levels. The matching algorithm is
-        implemented in the `Backtest` class.
+        Execute order.
+
+        Note that an order is split into multiple trades if it is matched
+        across multiple prices levels.
 
         :param timestamp:
             pd.Timestamp, date and time that order was executed
@@ -830,7 +828,7 @@ class Order:
 
     def cancel(self):
         """
-        Delete remaining quantity of active order.
+        Cancel order.
         """
 
         # set status 'CANCELLED' if order is still active
@@ -839,7 +837,7 @@ class Order:
 
     def __str__(self):
         """
-        Provide string representation.
+        String representation.
         """
 
         string = "{side} {market_id} with {quantity}@{limit}, {time}".format(
@@ -884,7 +882,7 @@ class Trade:
         self.trade_id = len(self.__class__.history)
 
         # ...
-        print("(SYSTEM) trade {trade_id} was executed: {self}".format(
+        print("(INFO) trade {trade_id} was executed: {self}".format(
             trade_id=self.trade_id,
             self=self,
         ))
@@ -894,7 +892,7 @@ class Trade:
 
     def __str__(self):
         """
-        Provide string representation.
+        String representation.
         """
 
         string = "{side} {market_id} with {quantity}@{price}, {time}".format(
@@ -906,3 +904,5 @@ class Trade:
         )
 
         return string
+
+

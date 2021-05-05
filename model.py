@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import abc
 import numpy as np
 import tensorflow as tf # install tf 2.0 or later
 
-class BaseModel(abc.ABC, tf.keras.Model):
+class BaseModel(tf.keras.Model, abc.ABC):
 
     def __init__(self, name, *args, **kwargs):
         """
@@ -15,8 +15,8 @@ class BaseModel(abc.ABC, tf.keras.Model):
         :param name:
             str, model name
         """
-
-        self._name = name # set private attribute in tf.keras.Model
+        
+        super(BaseModel, self).__init__(name)
 
     @abc.abstractmethod
     def build(self, input_shape):

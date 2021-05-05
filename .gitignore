@@ -1,4 +1,10 @@
 
+# Miscellaneous
+_data/
+data/
+_docs/
+docs/
+
 # Mac/OSX
 .DS_Store
 .DS_Store?

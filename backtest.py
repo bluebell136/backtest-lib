@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 from market import Market, Order, Trade
-from ast import literal_eval
 
-import pandas as pd
+import os
 import numpy as np
+import pandas as pd
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -18,7 +18,7 @@ types 'BOOK', 'TRADES' and 'NEWS'.
 limit order book levels 1-10, each with bid price, bid size, ask price and
 ask size.
 
-  "TIMESTAMP_UTC": str,
+  "TIMESTAMP_UTC": pd.Timestamp,
   "L1-BidPrice": float, "L1-BidSize": int,
   "L1-AskPrice": float, "L1-AskSize": int,
   "L2-BidPrice": float, "L2-BidSize": int,
@@ -43,25 +43,32 @@ ask size.
 - 'TRADES' is based on TRTH trades data and includes timestamp (UTC) as well
 as price and volume.
 
-  "TIMESTAMP_UTC": str,
-  "Price": object,
-  "Volume": object,
+  "TIMESTAMP_UTC": pd.Timestamp,
+  "Price": [<float>, *],
+  "Volume": [<int>, *],
 
 - 'NEWS' is based on scraped twitter data related to the observed stocks and
-includes timestamp (UTC) as well as the message body (...).
+includes timestamp (UTC) as well as language of a tweet, the tweet itself, the
+number of retweets, favorites, comments and times quoted.
 
-  "TIMESTAMP_UTC": str,
-  "message": str,
+  "TIMESTAMP_UTC": pd.Timestamp,
+  "language": [<str>, *],
+  "text": [<str>, *],
+  "retweets": [<int>, *],
+  "favorites": [<int>, *],
+  "comments": [<int>, *],
+  "quoted": [<int>, *],
 
 """
 
-# backtest engine ---
-
 class Backtest:
+
+    timestamp_global = None # most recent timestamp across all sources
 
     def __init__(self, agent, generator):
         """
-        Backtest evaluates a trading strategy based on multiple markets.
+        Backtest evaluates a trading agent based on a data generator instance
+        that yields events based on a set of sources.
 
         :param agent:
             Agent, trading agent instance
@@ -89,7 +96,7 @@ class Backtest:
 
     def market_step(self, market_id, step):
         """
-        Update book_state and match standing orders.
+        Update market state and match standing orders.
 
         :param market_id:
             str, market identifier
@@ -97,22 +104,21 @@ class Backtest:
             int, backtest step
         """
 
-        # get book, trades state required to update book
+        # get corresponding book, trades source
         source_book = self.sources[f"{market_id}.BOOK"]
         source_trades = self.sources[f"{market_id}.TRADES"]
 
-        # update book state based on historical data
+        # update market state based on historical data
         self.markets[market_id].update(
             book_state=source_book.iloc[step, :],
             trades_state=source_trades.iloc[step, :],
         )
-        # match standing agent orders based on book state
+        # match standing agent orders against pre-trade state
         self.markets[market_id].match()
 
     def agent_step(self, source_id, step):
         """
-        Alert agent by sending any updated state through the corresponding
-        method.
+        Alert agent by sending any event through the corresponding method.
 
         :param source_id:
             str, source identifier
@@ -122,7 +128,7 @@ class Backtest:
 
         # get market_id
         market_id = source_id.split(".")[0]
-        # get state required to alert agent
+        # get event required to alert agent
         source_state = self.sources[source_id].iloc[step, :]
 
         # alert agent every time that book is updated
@@ -150,18 +156,22 @@ class Backtest:
                 timestamp=self.monitor.iloc[step, 0],
                 timestamp_next=self.monitor.iloc[step+1, 0],
             )
-        # will fail for the last timestep per monitor
+        # will fail for the last step per monitor frame
         except:
             pass
 
     def run(self, verbose=True, interval=100):
         """
-        Iterate through sources and update market_state.
+        Iterate over sources and update market_state.
 
         :param verbose:
             bool, print updates with each iteration, default is True
         """
 
+        # print before backtest ..
+        print("\n(INFO) start backtest ...\n")
+
+        # ...
         for sources, monitor in self.generator:
 
             # update data
@@ -171,13 +181,16 @@ class Backtest:
             # ...
             for step, timestamp, *monitor_state in self.monitor.itertuples():
 
+                # update global timestamp
+                self.__class__.timestamp_global = timestamp
+
                 # get source_id per updated source
                 updated_sources = (monitor
                     .iloc[:, 1:]
                     .columns[monitor_state]
                     .values
                 )
-                # get market_id for book update (trades update is optional)
+                # get market_id for book event (trades event is optional)
                 updated_markets = [col.split(".")[0] for col in updated_sources
                     if col.endswith("BOOK")
                 ]
@@ -191,33 +204,32 @@ class Backtest:
                 for source_id in updated_sources:
                     self.agent_step(source_id, step)
 
-                # print status
+                # print agent status
                 if verbose and not step % interval:
                     print(self.agent)
 
             # ...
-            for market in self.markets.values():
+            self.logger.write()
 
-                # run reset routine before each data update
+            # run reset routine before each data update
+            for _, market in self.markets.items():
                 market.reset()
 
-        # print after test ...
-        print("DONE. pnl: {pnl_real}, pnl_unreal: {pnl_unreal}".format(
+        # print after backtest ...
+        print("\n(INFO) pnl: {pnl_real}, pnl_unreal: {pnl_unreal}\n".format(
             pnl_real=self.agent.pnl_realized,
             pnl_unreal=self.agent.pnl_unrealized,
         ))
-
-# data generator ---
 
 class Generator:
 
     def __init__(self, sources, start_date, end_date):
         """
-        Generator class that, in order to save memory, yields source data one
-        day at a time.
+        Generator class that yields source data one day at a time, in order to
+        save memory.
 
         :param sources:
-            dict, {<source_id>: <source_path>, *}
+            list, [<source_id>, *]
         :param start_date:
             str, date string, default is "2016-01-01"
         :param end_date:
@@ -230,16 +242,19 @@ class Generator:
         self.end_date = pd.Timestamp(end_date)
 
         # ...
+        self.directory = "./data" # this relative path is fixed
         self.time_delta = pd.Timedelta(1, "D")
 
     @staticmethod
-    def _load_sources(sources_input, date):
+    def _load_sources(directory, sources, date):
         """
-        Load .csv files into dataframes and store them in a dictionary together
-        with their corresponding key.
+        Load .csv(.gz) and .json files into dataframes and store them in a
+        dictionary together with their corresponding key.
 
-        :param sources_input:
-            dict, {<source_id>: <source_path>, *}
+        :param directory:
+            str, directory to load files from
+        :param sources:
+            dict, [<source_id>, *]
         :param date:
             pd.Timestamp, date to filter data by
         :return sources_output:
@@ -247,36 +262,61 @@ class Generator:
         """
 
         datetime = "TIMESTAMP_UTC"
-        sources_output = {}
+        sources_output = dict()
 
-        for source_id, source_path in sources_input.items():
+        # identify all paths available in directory
+        path_list = [os.path.join(pre, f) for pre, _, sub
+            in os.walk(directory) for f in sub if not f.startswith((".", "_"))
+        ]
 
-            # load book files as .csv(.gz)
+        # ...
+        for source_id in sources:
+
+            # identify matching criteria
+            market_id, event_id = source_id.split(".")
+            date_string = str(date.date()).replace("-", "")
+
+            path_filter = path_list
+
+            # require matching market_id
+            path_filter = filter(
+                lambda path: market_id.lower() in path.lower(), path_filter)
+            # require matching event_id
+            path_filter = filter(
+                lambda path: event_id.lower() in path.lower(), path_filter)
+            # require matching date
+            path_filter = filter(
+                lambda path: date_string in path, path_filter)
+
+            path_filter = list(path_filter)
+
+            # there should be exactly one matching path
+            if path_filter:
+                source_path = path_filter[0]
+            # otherwise, raise Exception
+            else:
+                raise Exception("(ERROR) found no data for {source_id}".format(
+                    source_id=source_id,
+                ))
+
+            # load event_id 'BOOK' as .csv(.gz)
             if "BOOK" in source_id:
-                df = pd.read_csv(
-                    source_path,
-                    parse_dates=[datetime],
-                )
-            # load trades files as .json
+                df = pd.read_csv(source_path, parse_dates=[datetime])
+            # load event_id 'TRADES' as .json
             if "TRADES" in source_id:
-                df = pd.read_json(
-                    source_path,
-                    convert_dates=True,
-                )
-            # load news files as .json
+                df = pd.read_json(source_path, convert_dates=True)
+            # load event_id 'NEWS' as .json
             if "NEWS" in source_id:
-                df = pd.read_json(
-                    source_path,
-                    convert_dates=True,
-                )
+                df = pd.read_json(source_path, convert_dates=True)
 
-            # remove timezone from timestamp
-            timestamp = df[datetime]
-            df[datetime] = pd.DatetimeIndex(timestamp).tz_localize(None)
-            # filter dataframe by date
-            df = df.loc[df[datetime].dt.date == date.date()]
+            # if dataframe is empty, break
+            if not len(df.index) > 0:
+                break
 
-            # ...
+            # make timestamp timezone-unaware
+            df[datetime] = pd.DatetimeIndex(df[datetime]).tz_localize(None)
+
+            # add dataframe to output dictionary
             sources_output[source_id] = df
 
         return sources_output
@@ -297,11 +337,13 @@ class Generator:
 
         # unpack dictionary
         id_list, df_list = zip(*sources.items())
+
         # rename columns and use id as prefix, exclude timestamp
         add_prefix = lambda id, df: df.rename(columns={x: f"{id}__{x}"
             for x in df.columns[1:]
         })
         df_list = list(map(add_prefix, id_list, df_list))
+
         # merge sources horizontally using full outer join
         df_merged = pd.concat([
             df.set_index(datetime) for df in df_list
@@ -312,11 +354,13 @@ class Generator:
             df_merged[[datetime]], # timestamp
             df_merged[[x for x in df_merged.columns if id in x]
         ]], axis=1) for id in id_list]
+
         # rename columns and remove prefix, exclude timestamp
         del_prefix = lambda df: df.rename(columns={x: x.split("__")[1]
             for x in df.columns[1:]
         })
         df_list = list(map(del_prefix, df_list))
+
         # pack dictionary
         sources = dict(zip(id_list, df_list))
 
@@ -352,7 +396,7 @@ class Generator:
     def __iter__(self):
         """
         Iterate over each single date between the specified date_start and
-        date_end, and yield
+        date_end, and yield both sources dictionary and monitor dataframe.
 
         :yield sources:
             dict, {<source_id>: <pd.DataFrame>, *}, with aligned timestamp
@@ -362,24 +406,30 @@ class Generator:
 
         while self.start_date <= self.end_date:
 
-            # load data
-            print("(SYSTEM) load data for {date} ...".format(
-                date=self.start_date.date(),
-            ))
-            sources = self._load_sources(
-                sources_input=self.sources,
-                date=self.start_date
-            )
-            # process data
-            sources = self._align_sources(sources)
-            monitor = self._monitor_sources(sources)
-
-            # yield sources, monitor if non-empty
-            if len(monitor.index) > 0:
+            # try to load, process and yield data
+            try:
+                print("(INFO) load data for {date} ...".format(
+                    date=self.start_date.date(),
+                ))
+                sources = self._load_sources(
+                    directory=self.directory,
+                    sources=self.sources,
+                    date=self.start_date,
+                )
+                sources = self._align_sources(sources)
+                monitor = self._monitor_sources(sources)
                 yield sources, monitor
-
-            # increment this_date
-            self.start_date += self.time_delta
+            # should no data be available, pass
+            except:
+                pass
+            # continue with next date
+            finally:
+                self.start_date += self.time_delta
 
     def __next__(self):
         return self
+
+class Logger:
+
+    def __init__(self):
+        pass
