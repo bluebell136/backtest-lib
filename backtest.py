@@ -208,17 +208,14 @@ class Backtest:
                 if verbose and not step % interval:
                     print(self.agent)
 
-            # ...
-            self.logger.write()
-
             # run reset routine before each data update
             for _, market in self.markets.items():
                 market.reset()
 
         # print after backtest ...
-        print("\n(INFO) pnl: {pnl_real}, pnl_unreal: {pnl_unreal}\n".format(
-            pnl_real=self.agent.pnl_realized,
-            pnl_unreal=self.agent.pnl_unrealized,
+        print("\n(INFO) pnl_realized: {pnl_1}, pnl_unrealized: {pnl_2}\n".format(
+            pnl_1=self.agent.pnl_realized,
+            pnl_2=self.agent.pnl_unrealized,
         ))
 
 class Generator:
@@ -242,7 +239,10 @@ class Generator:
         self.end_date = pd.Timestamp(end_date)
 
         # ...
-        self.directory = "./data" # this relative path is fixed
+        self.directory = os.path.join(
+            os.path.dirname(__file__), # preprend to get absolute path
+            "data" # instead of "./data"
+        )
         self.time_delta = pd.Timedelta(1, "D")
 
     @staticmethod
@@ -429,7 +429,4 @@ class Generator:
     def __next__(self):
         return self
 
-class Logger:
 
-    def __init__(self):
-        pass
